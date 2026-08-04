@@ -1,11 +1,14 @@
 import os
 import sqlite3
 import time
+import threading
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1003809545859
+PORT = int(os.getenv("PORT", 10000))  # Порт, который требует Render
 
 if not BOT_TOKEN:
     print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
@@ -13,6 +16,20 @@ if not BOT_TOKEN:
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 DB_NAME = "database.db"
+
+# --- Заглушка веб-сервера для Render (чтобы хостинг видел открытый порт) ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"WebSoq Bot is running!")
+
+def run_web_server():
+    server_address = ("0.0.0.0", PORT)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    print(f"Веб-сервер для портов запущен на порту {PORT}")
+    httpd.serve_forever()
+
 
 # --- Инициализация БД ---
 def init_db():
@@ -307,7 +324,11 @@ def handle_update(update):
 
 def main():
     init_db()
-    print("Бот WebSoq успешно запущен!")
+    # Запускаем веб-сервер в отдельном потоке, чтобы Render видел занятый порт
+    server_thread = threading.Thread(target=run_web_server, daemon=True)
+    server_thread.start()
+
+    print("Бот WebSoq успешно запущен с поддержкой веб-порта!")
     offset = 0
     while True:
         updates_data = api_request("getUpdates", {"offset": offset, "timeout": 30})
