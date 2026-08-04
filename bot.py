@@ -29,6 +29,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"WebSoq CRM is running!")
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
 def run_web_server():
     server_address = ("0.0.0.0", PORT)
     httpd = HTTPServer(server_address, HealthCheckHandler)
