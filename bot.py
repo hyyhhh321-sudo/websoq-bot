@@ -54,7 +54,6 @@ def init_db():
 def check_spam(user_id):
     now = time.time()
     
-    # Проверка на мут
     if user_id in mutes:
         if now < mutes[user_id]:
             return "muted"
@@ -64,12 +63,12 @@ def check_spam(user_id):
     if user_id not in spam_tracker:
         spam_tracker[user_id] = []
         
-    # Очищаем старые таймстемпы (старше 1 секунды)
-    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now - t < 1.0]
+    # Окно увеличено до 3 секунд для более надежного отлова
+    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now - t < 3.0]
     spam_tracker[user_id].append(now)
     
     msg_count = len(spam_tracker[user_id])
-    if msg_count >= 4:
+    if msg_count >= 5:
         mutes[user_id] = now + 60
         return "mute_now"
     elif msg_count >= 3:
@@ -152,7 +151,6 @@ def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
 
     user_states[user_id] = {"state": "chatting"}
     
-    # Уведомление админам
     admin_text = (
         f"🚨 <b>Новый тикет открыт!</b>\n\n"
         f"👤 Клиент: <b>{custom_name}</b>\n"
@@ -162,18 +160,14 @@ def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
         f"<i>Для выставления счета используйте команду:</i>\n<code>/invoice 100</code>"
     )
     send_message(GROUP_ID, admin_text, reply_markup=admin_close_kb(), message_thread_id=thread_id)
-    
-    # Уведомление клиенту
     send_message(chat_id, f"✅ <b>Тикет создан!</b>\nВаш запрос: <i>{service_name}</i>\n\nНапишите ваше сообщение, и специалист ответит вам в ближайшее время.")
 
 def handle_update(update):
-    # 1. ОБРАБОТКА ОПЛАТЫ (PRE CHECKOUT)
     if "pre_checkout_query" in update:
         query_id = update["pre_checkout_query"]["id"]
         api_request("answerPreCheckoutQuery", {"pre_checkout_query_id": query_id, "ok": True})
         return
 
-    # 2. ОБРАБОТКА CALLBACK
     if "callback_query" in update:
         cq = update["callback_query"]
         user = cq["from"]
@@ -265,7 +259,6 @@ def handle_update(update):
 
         answer_callback(cq["id"])
 
-    # 3. ОБРАБОТКА СООБЩЕНИЙ
     elif "message" in update:
         msg = update["message"]
         chat = msg["chat"]
@@ -273,7 +266,6 @@ def handle_update(update):
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
 
-        # --- Проверка успешной оплаты ---
         if "successful_payment" in msg:
             payment = msg["successful_payment"]
             stars = payment.get("total_amount", 0)
@@ -290,7 +282,6 @@ def handle_update(update):
                 send_message(GROUP_ID, f"💰 <b>ОПЛАТА ПОЛУЧЕНА!</b>\nКлиент только что оплатил инвойс на <b>{stars} ⭐️</b>.", message_thread_id=row[0])
             return
 
-        # --- Сообщения в ГРУППЕ (Админы) ---
         if chat_id == GROUP_ID:
             thread_id = msg.get("message_thread_id")
             if not thread_id: return
@@ -324,40 +315,42 @@ def handle_update(update):
                     send_message(GROUP_ID, "❌ Ошибка отправки инвойса.", message_thread_id=thread_id)
                 return
 
-            # Пересылка текста клиенту
             if text:
                 api_request("sendMessage", {"chat_id": client_id, "text": f"👨‍💻 <b>Поддержка:</b>\n{text}", "parse_mode": "HTML"})
 
-        # --- Сообщения в ЛС (Клиенты) ---
         elif chat["type"] == "private":
+            # --- ГЛОБАЛЬНЫЙ АНТИСПАМ ---
+            spam_status = check_spam(user_id)
+            if spam_status == "muted":
+                return
+            elif spam_status == "mute_now":
+                send_message(chat_id, "🛑 <b>Вы отправляете сообщения слишком быстро! Включен режим тишины на 1 минуту.</b>")
+                return
+            elif spam_status == "warn":
+                send_message(chat_id, "⚠️ <b>Пожалуйста, не отправляйте сообщения так часто.</b>")
+                return
+
             if text == "/start":
                 user_states.pop(user_id, None)
-                send_message(chat_id, "Приветствую! Добро пожаловать в <b>WebSoq</b>.\nВыберите нужный раздел:", main_menu())
+                welcome_text = (
+                    "👋 <b>Добро пожаловать в студию WebSoq!</b>\n\n"
+                    "Мы — команда профи, готовая воплотить ваши идеи в реальность. "
+                    "Специализируемся на разработке современных сайтов и умных Telegram-ботов любой сложности. 🚀\n\n"
+                    "👇 <i>Выберите интересующий вас раздел в меню ниже:</i>"
+                )
+                send_message(chat_id, welcome_text, main_menu())
                 return
 
             state_data = user_states.get(user_id, {})
             current_state = state_data.get("state")
 
-            # Ввод имени
             if current_state == "waiting_name":
                 srv = state_data.get("context")
-                name = text.strip()[:30] # Ограничим длину
+                name = text.strip()[:30]
                 create_ticket(user_id, chat_id, msg["from"], name, srv)
                 return
 
-            # Переписка в тикете + Антиспам
             if current_state == "chatting":
-                spam_status = check_spam(user_id)
-                
-                if spam_status == "muted":
-                    return # Игнорируем молча
-                elif spam_status == "mute_now":
-                    send_message(chat_id, "🛑 <b>Вы замьючены на 1 минуту за спам!</b>")
-                    return
-                elif spam_status == "warn":
-                    send_message(chat_id, "⚠️ <b>Пожалуйста, не отправляйте сообщения так часто.</b>")
-                    return
-
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
                 cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
@@ -368,12 +361,12 @@ def handle_update(update):
                     api_request("sendMessage", {"chat_id": GROUP_ID, "message_thread_id": row[0], "text": f"👤 <b>Клиент:</b>\n{text}", "parse_mode": "HTML"})
                 else:
                     user_states.pop(user_id, None)
-                    send_message(chat_id, "Ваш тикет закрыт. Нажмите /start", main_menu())
+                    send_message(chat_id, "Ваш тикет закрыт. Нажмите /start для возврата в меню.", main_menu())
 
 def main():
     init_db()
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("WebSoq CRM успешно запущен!")
+    print("WebSoq CRM: Антиспам усилен, приветствие обновлено!")
     
     offset = 0
     while True:
