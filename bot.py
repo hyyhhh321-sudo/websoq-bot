@@ -8,7 +8,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1003809545859
-PORT = int(os.getenv("PORT", 10000))  # Порт, который требует Render
+PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
     print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
@@ -17,7 +17,7 @@ if not BOT_TOKEN:
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 DB_NAME = "database.db"
 
-# --- Заглушка веб-сервера для Render (чтобы хостинг видел открытый порт) ---
+# --- Веб-сервер для порта Render ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -27,9 +27,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def run_web_server():
     server_address = ("0.0.0.0", PORT)
     httpd = HTTPServer(server_address, HealthCheckHandler)
-    print(f"Веб-сервер для портов запущен на порту {PORT}")
     httpd.serve_forever()
-
 
 # --- Инициализация БД ---
 def init_db():
@@ -120,14 +118,15 @@ def back_to_menu():
         ]
     }
 
-def cancel_ticket_kb():
+def close_ticket_admin_kb():
+    # Кнопка закрытия тикета для отправки в админ-группу
     return {
         "inline_keyboard": [
-            [{"text": "❌ Завершить диалог / тикет", "callback_data": "close_ticket"}]
+            [{"text": "🔒 Закрыть тикет", "callback_data": "admin_close_ticket"}]
         ]
     }
 
-# --- Логика обработки событий ---
+# --- Обработка событий ---
 def handle_update(update):
     if "callback_query" in update:
         cq = update["callback_query"]
@@ -202,14 +201,16 @@ def handle_update(update):
             service_title = service_names.get(data, "Запрос из бота")
 
             if row:
-                edit_message(chat_id, message_id, "У вас уже открыт активный тикет! Напишите сообщение сюда, и оно передастся специалистам.", cancel_ticket_kb())
+                # У клиента уже есть тикет, кнопки завершения у него нет
+                edit_message(chat_id, message_id, "У вас уже открыт активный тикет! Напишите сообщение сюда, и оно передастся специалистам.", back_to_menu())
                 set_state(user_id, "waiting_for_message")
                 answer_callback(cq["id"])
                 return
 
+            # Создаем тему в супергруппе
             topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": f"Тикет: {user.get('first_name', 'User')} ({user_id})"})
             if not topic_res or not topic_res.get("ok"):
-                edit_message(chat_id, message_id, "Не удалось создать тикет. Попробуйте позже.", back_to_menu())
+                edit_message(chat_id, message_id, "Не удалось создать тикет. Проверьте, что бот администратор с правом управления темами в группе.", back_to_menu())
                 answer_callback(cq["id"])
                 return
 
@@ -222,6 +223,7 @@ def handle_update(update):
             conn.commit()
             conn.close()
 
+            # Отправляем красивое уведомление в топик группы с кнопкой закрытия для админов
             username_str = f"@{user.get('username')}" if user.get('username') else "отсутствует"
             group_text = (
                 f"🚨 **Новый клиент / Тикет!**\n\n"
@@ -229,28 +231,39 @@ def handle_update(update):
                 f"🔗 Юзернейм: {username_str}\n"
                 f"🆔 ID: `{user_id}`\n"
                 f"📌 Услуга: **{service_title}**\n\n"
-                f"💡 *Чтобы отправить чек, напишите команду:* `/invoice (кол-во звезд)`"
+                f"💡 *Чтобы отправить счет, напишите:* `/invoice (кол-во звезд)`"
             )
-            send_message(GROUP_ID, group_text, message_thread_id=thread_id)
+            send_message(GROUP_ID, group_text, reply_markup=close_ticket_admin_kb(), message_thread_id=thread_id)
 
-            edit_message(chat_id, message_id, f"💬 **Тикет успешно открыт!**\nВы выбрали: *{service_title}*.\n\nНапишите ваше сообщение прямо здесь.", cancel_ticket_kb())
+            # Клиенту показываем чистое сообщение без кнопки закрытия
+            edit_message(chat_id, message_id, f"💬 **Тикет успешно открыт!**\nВы выбрали: *{service_title}*.\n\nНапишите ваше сообщение прямо здесь, и наша команда ответит вам.", back_to_menu())
             set_state(user_id, "waiting_for_message")
             answer_callback(cq["id"])
 
-        elif data == "close_ticket":
+        # Закрытие тикета администратором из группы
+        elif data == "admin_close_ticket":
+            thread_id = msg.get("message_thread_id")
+            if not thread_id:
+                answer_callback(cq["id"], "Ошибка темы")
+                return
+
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
-            cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
+            cursor.execute("SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,))
             row = cursor.fetchone()
+            
             if row:
-                send_message(GROUP_ID, "🔒 Клиент закрыл этот тикет.", message_thread_id=row[0])
-                cursor.execute("DELETE FROM tickets WHERE user_id = ?", (user_id,))
+                client_id = row[0]
+                # Уведомляем клиента в ЛС
+                send_message(client_id, "✅ Ваш тикет был закрыт администратором. Спасибо, что обратились в **WebSoq**!", main_menu())
+                set_state(client_id, None)
+                # Удаляем из БД
+                cursor.execute("DELETE FROM tickets WHERE thread_id = ?", (thread_id,))
                 conn.commit()
             conn.close()
 
-            set_state(user_id, None)
-            edit_message(chat_id, message_id, "✅ Тикет успешно закрыт. Спасибо, что обратились в **WebSoq**!", main_menu())
-            answer_callback(cq["id"])
+            edit_message(chat_id, message_id, "🔒 **Тикет закрыт администратором.**")
+            answer_callback(cq["id"], "Тикет закрыт!")
 
     elif "message" in update:
         msg = update["message"]
@@ -324,11 +337,10 @@ def handle_update(update):
 
 def main():
     init_db()
-    # Запускаем веб-сервер в отдельном потоке, чтобы Render видел занятый порт
     server_thread = threading.Thread(target=run_web_server, daemon=True)
     server_thread.start()
 
-    print("Бот WebSoq успешно запущен с поддержкой веб-порта!")
+    print("Бот WebSoq запущен с исправленной логикой тикетов!")
     offset = 0
     while True:
         updates_data = api_request("getUpdates", {"offset": offset, "timeout": 30})
