@@ -5,7 +5,7 @@ import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Настройки
+# --- Настройки ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1003809545859
 PORT = int(os.getenv("PORT", 10000))
@@ -17,12 +17,17 @@ if not BOT_TOKEN:
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 DB_NAME = "database.db"
 
+# --- In-Memory Хранилища ---
+user_states = {}       # {user_id: {"state": "...", "context": "..."}}
+spam_tracker = {}      # {user_id: [timestamp1, timestamp2, ...]}
+mutes = {}             # {user_id: unban_timestamp}
+
 # --- Веб-сервер для порта Render ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"WebSoq Bot is running!")
+        self.wfile.write(b"WebSoq CRM is running!")
 
 def run_web_server():
     server_address = ("0.0.0.0", PORT)
@@ -37,38 +42,41 @@ def init_db():
         CREATE TABLE IF NOT EXISTS tickets (
             user_id INTEGER PRIMARY KEY,
             thread_id INTEGER,
-            user_name TEXT,
-            user_username TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_states (
-            user_id INTEGER PRIMARY KEY,
-            state TEXT
+            custom_name TEXT,
+            user_username TEXT,
+            service_name TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-def get_state(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT state FROM user_states WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else None
+# --- Антиспам ---
+def check_spam(user_id):
+    now = time.time()
+    
+    # Проверка на мут
+    if user_id in mutes:
+        if now < mutes[user_id]:
+            return "muted"
+        else:
+            del mutes[user_id]
+            
+    if user_id not in spam_tracker:
+        spam_tracker[user_id] = []
+        
+    # Очищаем старые таймстемпы (старше 1 секунды)
+    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now - t < 1.0]
+    spam_tracker[user_id].append(now)
+    
+    msg_count = len(spam_tracker[user_id])
+    if msg_count >= 4:
+        mutes[user_id] = now + 60
+        return "mute_now"
+    elif msg_count >= 3:
+        return "warn"
+    return "ok"
 
-def set_state(user_id, state):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    if state:
-        cursor.execute("INSERT OR REPLACE INTO user_states (user_id, state) VALUES (?, ?)", (user_id, state))
-    else:
-        cursor.execute("DELETE FROM user_states WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-# --- API Запросы к Telegram ---
+# --- API Запросы ---
 def api_request(method, data=None):
     url = f"{API_URL}/{method}"
     try:
@@ -79,7 +87,7 @@ def api_request(method, data=None):
         return None
 
 def send_message(chat_id, text, reply_markup=None, message_thread_id=None):
-    data = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = reply_markup
     if message_thread_id:
@@ -87,184 +95,177 @@ def send_message(chat_id, text, reply_markup=None, message_thread_id=None):
     return api_request("sendMessage", data)
 
 def edit_message(chat_id, message_id, text, reply_markup=None):
-    data = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = reply_markup
     return api_request("editMessageText", data)
 
-def answer_callback(callback_query_id, text=""):
-    api_request("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
+def answer_callback(callback_query_id, text="", show_alert=False):
+    api_request("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text, "show_alert": show_alert})
 
 # --- Клавиатуры ---
 def main_menu():
     return {
         "inline_keyboard": [
-            [{"text": "🤖 Услуги с Telegram-ботами", "callback_data": "category_bots"}],
-            [{"text": "💻 Услуги с сайтами", "callback_data": "category_sites"}],
+            [{"text": "🌐 Разработка сайтов", "callback_data": "cat_sites"}],
+            [{"text": "🤖 Telegram-боты", "callback_data": "cat_bots"}],
             [{"text": "💎 Прайс-лист", "callback_data": "price_list"}],
-            [{"text": "💬 Задать вопрос / Заказать", "callback_data": "open_ticket"}],
+            [{"text": "💬 Консультация / Вопрос", "callback_data": "srv_consult"}],
         ]
     }
 
 def back_to_menu():
-    return {
-        "inline_keyboard": [
-            [{"text": "◀️ Назад в меню", "callback_data": "main_menu"}]
-        ]
-    }
+    return {"inline_keyboard": [[{"text": "◀️ Назад в меню", "callback_data": "main_menu"}]]}
 
-def close_ticket_admin_kb():
-    # Кнопка закрытия тикета для отправки в админ-группу
-    return {
-        "inline_keyboard": [
-            [{"text": "🔒 Закрыть тикет", "callback_data": "admin_close_ticket"}]
-        ]
-    }
+def skip_name_kb():
+    return {"inline_keyboard": [[{"text": "⏭ Пропустить", "callback_data": "skip_name"}], [{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
 
-# --- Обработка событий ---
+def admin_close_kb():
+    return {"inline_keyboard": [[{"text": "🔒 Закрыть тикет", "callback_data": "admin_close"}]]}
+
+# --- Словари услуг ---
+SERVICES = {
+    "srv_consult": "Консультация / Вопрос",
+    "srv_site_new": "Разработка сайтов с нуля",
+    "srv_site_fix": "Правки и исправления на сайтах",
+    "srv_bot_new": "Разработка и исправление ботов"
+}
+
+# --- Логика ---
+def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
+    service_name = SERVICES.get(service_key, "Неизвестная услуга")
+    
+    topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": f"{custom_name} | {service_name[:15]}"})
+    if not topic_res or not topic_res.get("ok"):
+        send_message(chat_id, "❌ Ошибка создания тикета. Попробуйте позже.")
+        return
+        
+    thread_id = topic_res["result"]["message_thread_id"]
+    username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO tickets (user_id, thread_id, custom_name, user_username, service_name) VALUES (?, ?, ?, ?, ?)",
+                   (user_id, thread_id, custom_name, user_obj.get('username', ''), service_name))
+    conn.commit()
+    conn.close()
+
+    user_states[user_id] = {"state": "chatting"}
+    
+    # Уведомление админам
+    admin_text = (
+        f"🚨 <b>Новый тикет открыт!</b>\n\n"
+        f"👤 Клиент: <b>{custom_name}</b>\n"
+        f"🔗 Username: {username_str}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"📌 Услуга: <b>{service_name}</b>\n\n"
+        f"<i>Для выставления счета используйте команду:</i>\n<code>/invoice 100</code>"
+    )
+    send_message(GROUP_ID, admin_text, reply_markup=admin_close_kb(), message_thread_id=thread_id)
+    
+    # Уведомление клиенту
+    send_message(chat_id, f"✅ <b>Тикет создан!</b>\nВаш запрос: <i>{service_name}</i>\n\nНапишите ваше сообщение, и специалист ответит вам в ближайшее время.")
+
 def handle_update(update):
+    # 1. ОБРАБОТКА ОПЛАТЫ (PRE CHECKOUT)
+    if "pre_checkout_query" in update:
+        query_id = update["pre_checkout_query"]["id"]
+        api_request("answerPreCheckoutQuery", {"pre_checkout_query_id": query_id, "ok": True})
+        return
+
+    # 2. ОБРАБОТКА CALLBACK
     if "callback_query" in update:
         cq = update["callback_query"]
         user = cq["from"]
         user_id = user["id"]
         data = cq["data"]
-        msg = cq["message"]
+        msg = cq.get("message")
+        if not msg: return
         chat_id = msg["chat"]["id"]
         message_id = msg["message_id"]
 
         if data == "main_menu":
-            set_state(user_id, None)
-            edit_message(chat_id, message_id, "Главное меню **WebSoq**:", main_menu())
-            answer_callback(cq["id"])
-
+            user_states.pop(user_id, None)
+            edit_message(chat_id, message_id, "Главное меню <b>WebSoq</b>:", main_menu())
+            
         elif data == "price_list":
             text = (
-                "💎 **Прайс-лист студии WebSoq**\n\n"
-                "🌐 **Разработка сайтов и верстка:**\n"
-                "• База сайта (HTML верстка) — 3 000 – 5 000 ⭐️ (~4 500 – 7 500 ₽)\n"
-                "• CSS (оформление и стили) — 2 000 – 3 000 ⭐️ (~3 000 – 4 500 ₽)\n"
-                "• JavaScript (интерактив, анимации) — 2 000 – 3 500 ⭐️ (~3 000 – 5 000 ₽)\n"
-                "• Адаптация под мобильные устройства — 2 000 – 3 000 ⭐️ (~3 000 – 4 500 ₽)\n"
-                "• Создание сайтов на Tilda — 5 000 – 8 000 ⭐️ (~7 500 – 12 000 ₽)\n\n"
-                "🛠 **Правки и исправления на сайтах:**\n"
-                "• Исправление текста / Замена картинок — 800 – 1 500 ⭐️ (~1 200 – 2 200 ₽)\n"
-                "• Изменение стилей и элементов — 1 500 – 3 000 ⭐️ (~2 200 – 4 500 ₽)\n"
-                "• Поиск багов / уязвимостей — 2 000 – 4 000 ⭐️ (~3 000 – 6 000 ₽)\n\n"
-                "🤖 **Telegram-боты:**\n"
-                "• Лёгкий бот (автоответчик, FAQ, визитка) — 5 000 – 8 000 ⭐️ (~7 500 – 12 000 ₽)\n"
-                "• Средний бот (заявки, категории, тикеты) — 12 000 – 20 000 ⭐️ (~18 000 – 30 000 ₽)\n"
-                "• Исправление чужого / сломанного кода — от 3 000 ⭐️ (~4 500 ₽)\n"
-                "• Сложные проекты — от 25 000 ⭐️ (индивидуально)"
+                "💎 <b>Прайс-лист WebSoq</b>\n\n"
+                "🌐 <b>Разработка сайтов с нуля и доработки:</b>\n"
+                "• База сайта (HTML верстка) — 3 000–5 000 ⭐️\n"
+                "• CSS (оформление и стили) — 2 000–3 000 ⭐️\n"
+                "• JavaScript (интерактив, анимации) — 2 000–3 500 ⭐️\n"
+                "• Адаптация под мобильные устройства — 2 000–3 000 ⭐️\n"
+                "• Создание сайтов на Tilda — 5 000–8 000 ⭐️\n\n"
+                "🛠 <b>Правки и исправления на сайтах:</b>\n"
+                "• Исправление текста / Замена картинок — 800–1 500 ⭐️\n"
+                "• Изменение стилей и элементов — 1 500–3 000 ⭐️\n"
+                "• Поиск багов / уязвимостей — 2 000–4 000 ⭐️\n\n"
+                "🤖 <b>Разработка и исправление Telegram-ботов:</b>\n"
+                "• Лёгкий бот (автоответчик, FAQ, визитка) — 5 000–8 000 ⭐️\n"
+                "• Средний бот (заявки, категории, тикеты) — 12 000–20 000 ⭐️\n"
+                "• Исправление чужого / сломанного кода — от 3 000 ⭐️\n"
+                "• Сложные проекты — от 25 000 ⭐️"
             )
             edit_message(chat_id, message_id, text, back_to_menu())
-            answer_callback(cq["id"])
 
-        elif data == "category_sites":
-            kb = {
-                "inline_keyboard": [
-                    [{"text": "🌐 Создать сайт с нуля и доработки", "callback_data": "order_site"}],
-                    [{"text": "🔧 Правки и исправления на сайтах", "callback_data": "order_site_fix"}],
-                    [{"text": "◀️ Назад в меню", "callback_data": "main_menu"}],
-                ]
-            }
-            edit_message(chat_id, message_id, "💻 Выберите направление по сайтам:", kb)
-            answer_callback(cq["id"])
+        elif data == "cat_sites":
+            kb = {"inline_keyboard": [
+                [{"text": "🌐 Создать сайт с нуля", "callback_data": "srv_site_new"}],
+                [{"text": "🔧 Правки и исправления", "callback_data": "srv_site_fix"}],
+                [{"text": "◀️ Назад", "callback_data": "main_menu"}]
+            ]}
+            edit_message(chat_id, message_id, "💻 <b>Направление: Сайты</b>", kb)
 
-        elif data == "category_bots":
-            kb = {
-                "inline_keyboard": [
-                    [{"text": "🤖 Разработка и исправление ботов", "callback_data": "order_bot"}],
-                    [{"text": "◀️ Назад в меню", "callback_data": "main_menu"}],
-                ]
-            }
-            edit_message(chat_id, message_id, "🤖 Выберите направление по Telegram-ботам:", kb)
-            answer_callback(cq["id"])
+        elif data == "cat_bots":
+            kb = {"inline_keyboard": [
+                [{"text": "🤖 Разработка и исправление", "callback_data": "srv_bot_new"}],
+                [{"text": "◀️ Назад", "callback_data": "main_menu"}]
+            ]}
+            edit_message(chat_id, message_id, "🤖 <b>Направление: Боты</b>", kb)
 
-        elif data in ["open_ticket", "order_site", "order_site_fix", "order_bot"]:
+        elif data.startswith("srv_"):
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
             cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
             conn.close()
 
-            service_names = {
-                "open_ticket": "Задать вопрос / Консультация",
-                "order_site": "Разработка сайтов с нуля и доработки",
-                "order_site_fix": "Правки и исправления на сайтах",
-                "order_bot": "Разработка и исправление Telegram-ботов",
-            }
-            service_title = service_names.get(data, "Запрос из бота")
-
             if row:
-                # У клиента уже есть тикет, кнопки завершения у него нет
-                edit_message(chat_id, message_id, "У вас уже открыт активный тикет! Напишите сообщение сюда, и оно передастся специалистам.", back_to_menu())
-                set_state(user_id, "waiting_for_message")
-                answer_callback(cq["id"])
+                answer_callback(cq["id"], "У вас уже есть открытый тикет!", show_alert=True)
                 return
 
-            # Создаем тему в супергруппе
-            topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": f"Тикет: {user.get('first_name', 'User')} ({user_id})"})
-            if not topic_res or not topic_res.get("ok"):
-                edit_message(chat_id, message_id, "Не удалось создать тикет. Проверьте, что бот администратор с правом управления темами в группе.", back_to_menu())
-                answer_callback(cq["id"])
-                return
+            user_states[user_id] = {"state": "waiting_name", "context": data}
+            edit_message(chat_id, message_id, "✍️ Как мы можем к вам обращаться?\n\n<i>Напишите имя в чат или нажмите «Пропустить»</i>", skip_name_kb())
 
-            thread_id = topic_res["result"]["message_thread_id"]
+        elif data == "skip_name":
+            state_data = user_states.get(user_id)
+            if state_data and state_data.get("state") == "waiting_name":
+                srv = state_data["context"]
+                edit_message(chat_id, message_id, "⏳ Создаем тикет...")
+                create_ticket(user_id, chat_id, user, user.get("first_name", "Клиент"), srv)
 
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO tickets (user_id, thread_id, user_name, user_username) VALUES (?, ?, ?, ?)",
-                           (user_id, thread_id, user.get('first_name', ''), user.get('username', 'нет')))
-            conn.commit()
-            conn.close()
-
-            # Отправляем красивое уведомление в топик группы с кнопкой закрытия для админов
-            username_str = f"@{user.get('username')}" if user.get('username') else "отсутствует"
-            group_text = (
-                f"🚨 **Новый клиент / Тикет!**\n\n"
-                f"👤 Имя: {user.get('first_name', '')}\n"
-                f"🔗 Юзернейм: {username_str}\n"
-                f"🆔 ID: `{user_id}`\n"
-                f"📌 Услуга: **{service_title}**\n\n"
-                f"💡 *Чтобы отправить счет, напишите:* `/invoice (кол-во звезд)`"
-            )
-            send_message(GROUP_ID, group_text, reply_markup=close_ticket_admin_kb(), message_thread_id=thread_id)
-
-            # Клиенту показываем чистое сообщение без кнопки закрытия
-            edit_message(chat_id, message_id, f"💬 **Тикет успешно открыт!**\nВы выбрали: *{service_title}*.\n\nНапишите ваше сообщение прямо здесь, и наша команда ответит вам.", back_to_menu())
-            set_state(user_id, "waiting_for_message")
-            answer_callback(cq["id"])
-
-        # Закрытие тикета администратором из группы
-        elif data == "admin_close_ticket":
+        elif data == "admin_close":
             thread_id = msg.get("message_thread_id")
-            if not thread_id:
-                answer_callback(cq["id"], "Ошибка темы")
-                return
-
+            if not thread_id: return
+            
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,))
+            cursor.execute("SELECT user_id, custom_name FROM tickets WHERE thread_id = ?", (thread_id,))
             row = cursor.fetchone()
             
             if row:
-                client_id = row[0]
-                # Уведомляем клиента в ЛС
-                send_message(client_id, "✅ Ваш тикет был закрыт администратором. Спасибо, что обратились в **WebSoq**!", main_menu())
-                set_state(client_id, None)
-                # Удаляем из БД
+                client_id, c_name = row
+                send_message(client_id, "✅ Ваш тикет был успешно закрыт. Спасибо, что выбрали <b>WebSoq</b>!", main_menu())
+                user_states.pop(client_id, None)
                 cursor.execute("DELETE FROM tickets WHERE thread_id = ?", (thread_id,))
                 conn.commit()
+                edit_message(chat_id, message_id, f"🔒 Тикет клиента <b>{c_name}</b> закрыт администратором.")
             conn.close()
 
-            edit_message(chat_id, message_id, "🔒 **Тикет закрыт администратором.**")
-            answer_callback(cq["id"], "Тикет закрыт!")
+        answer_callback(cq["id"])
 
+    # 3. ОБРАБОТКА СООБЩЕНИЙ
     elif "message" in update:
         msg = update["message"]
         chat = msg["chat"]
@@ -272,86 +273,119 @@ def handle_update(update):
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
 
+        # --- Проверка успешной оплаты ---
+        if "successful_payment" in msg:
+            payment = msg["successful_payment"]
+            stars = payment.get("total_amount", 0)
+            
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            send_message(chat_id, f"🎉 <b>Оплата получена!</b>\nСпасибо за оплату в размере {stars} ⭐️. Специалист уже уведомлен.")
+            
+            if row:
+                send_message(GROUP_ID, f"💰 <b>ОПЛАТА ПОЛУЧЕНА!</b>\nКлиент только что оплатил инвойс на <b>{stars} ⭐️</b>.", message_thread_id=row[0])
+            return
+
+        # --- Сообщения в ГРУППЕ (Админы) ---
         if chat_id == GROUP_ID:
             thread_id = msg.get("message_thread_id")
-            if not thread_id:
-                return
+            if not thread_id: return
 
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
             cursor.execute("SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,))
             row = cursor.fetchone()
             conn.close()
-
-            if not row:
-                return
-
+            if not row: return
             client_id = row[0]
 
             if text.startswith("/invoice"):
-                parts = text.replace("(", "").replace(")", "").split()
+                parts = text.split()
                 if len(parts) < 2 or not parts[1].isdigit():
-                    send_message(GROUP_ID, "⚠️ Ошибка! Формат: `/invoice 100`", message_thread_id=thread_id)
+                    send_message(GROUP_ID, "⚠️ Формат: <code>/invoice 100</code>", message_thread_id=thread_id)
                     return
                 stars = int(parts[1])
                 inv_data = {
                     "chat_id": client_id,
                     "title": "Оплата услуг WebSoq",
-                    "description": f"Оплата заказа на сумму {stars} Telegram Stars ⭐",
-                    "payload": f"websoq_{client_id}",
+                    "description": f"Счет на оплату услуг (Сумма: {stars} Telegram Stars)",
+                    "payload": f"websoq_pay_{client_id}_{int(time.time())}",
                     "currency": "XTR",
-                    "prices": [{"label": "Услуга WebSoq", "amount": stars}]
+                    "prices": [{"label": "Услуги WebSoq", "amount": stars}]
                 }
                 res = api_request("sendInvoice", inv_data)
                 if res and res.get("ok"):
-                    send_message(GROUP_ID, f"✅ Чек (инвойс) на {stars} ⭐ отправлен клиенту!", message_thread_id=thread_id)
+                    send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенту.", message_thread_id=thread_id)
                 else:
-                    send_message(GROUP_ID, f"❌ Не удалось отправить чек.", message_thread_id=thread_id)
+                    send_message(GROUP_ID, "❌ Ошибка отправки инвойса.", message_thread_id=thread_id)
                 return
 
-            api_request("sendMessage", {"chat_id": client_id, "text": text})
+            # Пересылка текста клиенту
+            if text:
+                api_request("sendMessage", {"chat_id": client_id, "text": f"👨‍💻 <b>Поддержка:</b>\n{text}", "parse_mode": "HTML"})
 
+        # --- Сообщения в ЛС (Клиенты) ---
         elif chat["type"] == "private":
             if text == "/start":
-                set_state(user_id, None)
-                send_message(chat_id, "Приветствую! Добро пожаловать в **WebSoq**.\n\nВыберите интересующий вас раздел:", main_menu())
+                user_states.pop(user_id, None)
+                send_message(chat_id, "Приветствую! Добро пожаловать в <b>WebSoq</b>.\nВыберите нужный раздел:", main_menu())
                 return
 
-            state = get_state(user_id)
-            if state == "waiting_for_message":
-                if text.startswith("/"):
+            state_data = user_states.get(user_id, {})
+            current_state = state_data.get("state")
+
+            # Ввод имени
+            if current_state == "waiting_name":
+                srv = state_data.get("context")
+                name = text.strip()[:30] # Ограничим длину
+                create_ticket(user_id, chat_id, msg["from"], name, srv)
+                return
+
+            # Переписка в тикете + Антиспам
+            if current_state == "chatting":
+                spam_status = check_spam(user_id)
+                
+                if spam_status == "muted":
+                    return # Игнорируем молча
+                elif spam_status == "mute_now":
+                    send_message(chat_id, "🛑 <b>Вы замьючены на 1 минуту за спам!</b>")
                     return
+                elif spam_status == "warn":
+                    send_message(chat_id, "⚠️ <b>Пожалуйста, не отправляйте сообщения так часто.</b>")
+                    return
+
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
                 cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
                 row = cursor.fetchone()
                 conn.close()
 
-                if not row:
-                    send_message(chat_id, "Ваш тикет закрыт. Нажмите /start")
-                    set_state(user_id, None)
-                    return
-
-                thread_id = row[0]
-                api_request("sendMessage", {"chat_id": GROUP_ID, "message_thread_id": thread_id, "text": text})
+                if row:
+                    api_request("sendMessage", {"chat_id": GROUP_ID, "message_thread_id": row[0], "text": f"👤 <b>Клиент:</b>\n{text}", "parse_mode": "HTML"})
+                else:
+                    user_states.pop(user_id, None)
+                    send_message(chat_id, "Ваш тикет закрыт. Нажмите /start", main_menu())
 
 def main():
     init_db()
-    server_thread = threading.Thread(target=run_web_server, daemon=True)
-    server_thread.start()
-
-    print("Бот WebSoq запущен с исправленной логикой тикетов!")
+    threading.Thread(target=run_web_server, daemon=True).start()
+    print("WebSoq CRM успешно запущен!")
+    
     offset = 0
     while True:
-        updates_data = api_request("getUpdates", {"offset": offset, "timeout": 30})
-        if updates_data and updates_data.get("ok"):
-            for update in updates_data.get("result", []):
+        updates = api_request("getUpdates", {"offset": offset, "timeout": 30})
+        if updates and updates.get("ok"):
+            for update in updates.get("result", []):
                 offset = update["update_id"] + 1
                 try:
                     handle_update(update)
                 except Exception as e:
-                    print(f"Ошибка: {e}")
-        time.sleep(1)
+                    print(f"Update Error: {e}")
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
