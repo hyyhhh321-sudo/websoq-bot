@@ -8,6 +8,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # --- Настройки ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1003809545859
+# ID темы для общего лога всех оплат (замените 0 на реальный ID темы, если она создана)
+PAYMENTS_THREAD_ID = int(os.getenv("PAYMENTS_THREAD_ID", 0)) 
 PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
@@ -67,7 +69,6 @@ def check_spam(user_id):
     if user_id not in spam_tracker:
         spam_tracker[user_id] = []
         
-    # Окно увеличено до 3 секунд для более надежного отлова
     spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now - t < 3.0]
     spam_tracker[user_id].append(now)
     
@@ -270,20 +271,40 @@ def handle_update(update):
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
 
+        # --- ОБРАБОТКА ОПЛАТЫ (ВЫНЕСЕНО В НАЧАЛО, ДО АНТИСПАМА) ---
         if "successful_payment" in msg:
             payment = msg["successful_payment"]
             stars = payment.get("total_amount", 0)
             
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
-            cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
+            cursor.execute("SELECT thread_id, custom_name, user_username, service_name FROM tickets WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
             conn.close()
             
             send_message(chat_id, f"🎉 <b>Оплата получена!</b>\nСпасибо за оплату в размере {stars} ⭐️. Специалист уже уведомлен.")
             
-            if row:
+            # Данные клиента для отчетов
+            user_obj = msg["from"]
+            username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
+            client_name = row[1] if row and row[1] else user_obj.get("first_name", "Клиент")
+            service_name = row[3] if row and row[3] else "Не указана"
+
+            # 1. Отправляем в текущую тему клиента (если тикет еще жив)
+            if row and row[0]:
                 send_message(GROUP_ID, f"💰 <b>ОПЛАТА ПОЛУЧЕНА!</b>\nКлиент только что оплатил инвойс на <b>{stars} ⭐️</b>.", message_thread_id=row[0])
+            
+            # 2. Отправляем в общую тему-архив всех оплат
+            if PAYMENTS_THREAD_ID > 0:
+                log_text = (
+                    f"💎 <b>Новая успешная оплата!</b>\n\n"
+                    f"👤 Клиент: <b>{client_name}</b>\n"
+                    f"🔗 Username: {username_str}\n"
+                    f"🆔 ID: <code>{user_id}</code>\n"
+                    f"📌 Услуга: <b>{service_name}</b>\n"
+                    f"⭐ Сумма: <b>{stars} Telegram Stars</b>"
+                )
+                send_message(GROUP_ID, log_text, message_thread_id=PAYMENTS_THREAD_ID)
             return
 
         if chat_id == GROUP_ID:
@@ -370,7 +391,7 @@ def handle_update(update):
 def main():
     init_db()
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("WebSoq CRM: Антиспам усилен, приветствие обновлено!")
+    print("WebSoq CRM: Оплаты обрабатываются вне мута, добавлен лог-архив!")
     
     offset = 0
     while True:
@@ -382,7 +403,7 @@ def main():
                     handle_update(update)
                 except Exception as e:
                     print(f"Update Error: {e}")
-        time.sleep(0.5)
+                time.sleep(0.5)
 
 if __name__ == "__main__":
     main()
