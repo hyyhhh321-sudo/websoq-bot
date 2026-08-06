@@ -1,4 +1,5 @@
 import os
+import html
 import sqlite3
 import time
 import threading
@@ -34,6 +35,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
+
+    def log_message(self, format, *args):
+        # Отключаем спам health-check пингами в логах
+        pass
 
 def run_web_server():
     server_address = ("0.0.0.0", PORT)
@@ -144,6 +149,18 @@ def edit_message(chat_id, message_id, text, reply_markup=None):
 def answer_callback(callback_query_id, text="", show_alert=False):
     api_request("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text, "show_alert": show_alert})
 
+def forward_with_prefix(prefix, from_chat_id, to_chat_id, message_id, message_thread_id=None):
+    """Отправляет подпись-заголовок, а затем копирует исходное сообщение (текст/фото/файл/голосовое)."""
+    send_message(to_chat_id, prefix, message_thread_id=message_thread_id)
+    copy_data = {
+        "chat_id": to_chat_id,
+        "from_chat_id": from_chat_id,
+        "message_id": message_id
+    }
+    if message_thread_id:
+        copy_data["message_thread_id"] = message_thread_id
+    api_request("copyMessage", copy_data)
+
 # --- Клавиатуры ---
 def main_menu():
     return {
@@ -174,6 +191,7 @@ SERVICES = {
 # --- Создание тикета ---
 def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
     service_name = SERVICES.get(service_key, "Неизвестная услуга")
+    safe_name = html.escape(custom_name)
     
     topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": f"{custom_name} | {service_name[:15]}"})
     if not topic_res or not topic_res.get("ok"):
@@ -194,7 +212,7 @@ def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
     
     admin_text = (
         f"🚨 <b>Новый тикет открыт!</b>\n\n"
-        f"👤 Клиент: <b>{custom_name}</b>\n"
+        f"👤 Клиент: <b>{safe_name}</b>\n"
         f"🔗 Username: {username_str}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
         f"📌 Услуга: <b>{service_name}</b>\n\n"
@@ -297,7 +315,7 @@ def handle_update(update):
                 user_states.pop(client_id, None)
                 cursor.execute("DELETE FROM tickets WHERE thread_id = ?", (thread_id,))
                 conn.commit()
-                edit_message(chat_id, message_id, f"🔒 Тикет клиента <b>{c_name}</b> закрыт администратором.")
+                edit_message(chat_id, message_id, f"🔒 Тикет клиента <b>{html.escape(c_name or '')}</b> закрыт администратором.")
             conn.close()
 
         answer_callback(cq["id"])
@@ -326,6 +344,7 @@ def handle_update(update):
             user_obj = msg["from"]
             username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
             client_name = row[1] if row and row[1] else user_obj.get("first_name", "Клиент")
+            safe_client_name = html.escape(client_name or "Клиент")
             service_name = row[3] if row and row[3] else "Не указана"
 
             if row and row[0]:
@@ -333,7 +352,7 @@ def handle_update(update):
             
             log_text = (
                 f"💎 <b>Новая успешная оплата!</b>\n\n"
-                f"👤 Клиент: <b>{client_name}</b>\n"
+                f"👤 Клиент: <b>{safe_client_name}</b>\n"
                 f"🔗 Username: {username_str}\n"
                 f"🆔 ID: <code>{user_id}</code>\n"
                 f"📌 Услуга: <b>{service_name}</b>\n"
@@ -395,11 +414,7 @@ def handle_update(update):
                 return 
 
             # ИДЕАЛЬНАЯ ПЕРЕСЫЛКА: копируем любое сообщение клиента (текст, фото, голосовые, файлы)
-            api_request("copyMessage", {
-                "chat_id": client_id,
-                "from_chat_id": GROUP_ID,
-                "message_id": message_id
-            })
+            forward_with_prefix("🧑‍💻 Поддержка:", GROUP_ID, client_id, message_id)
 
         # --- СООБЩЕНИЯ В ЛИЧКЕ (ОТ КЛИЕНТОВ) ---
         elif chat["type"] == "private":
@@ -445,12 +460,7 @@ def handle_update(update):
 
                 if row:
                     # ИДЕАЛЬНАЯ ПЕРЕСЫЛКА: клиент может слать фото багов, ТЗ файлами и голосовые
-                    api_request("copyMessage", {
-                        "chat_id": GROUP_ID,
-                        "from_chat_id": chat_id,
-                        "message_id": message_id,
-                        "message_thread_id": row[0]
-                    })
+                    forward_with_prefix("💻 Клиент:", chat_id, GROUP_ID, message_id, message_thread_id=row[0])
                 else:
                     user_states.pop(user_id, None)
                     send_message(chat_id, "Ваш тикет закрыт. Нажмите /start для возврата в меню.", main_menu())
@@ -471,6 +481,8 @@ def main():
                 except Exception as e:
                     print(f"Update Error: {e}")
                 time.sleep(0.05)
+        else:
+            time.sleep(1)  # пауза при сбое сети/API, чтобы не долбить getUpdates впустую
 
 if __name__ == "__main__":
     main()
