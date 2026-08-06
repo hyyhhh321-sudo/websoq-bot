@@ -386,12 +386,14 @@ def handle_update(update):
                     "description": f"Счет на оплату услуг (Сумма: {stars} Telegram Stars)",
                     "payload": f"websoq_pay_{client_id}_{int(time.time())}",
                     "currency": "XTR",
+                    "provider_token": "",  # Обязательно для Telegram Stars
                     "prices": [{"label": "Услуги WebSoq", "amount": stars}]
                 }
                 res = api_request("sendInvoice", inv_data)
                 if res and res.get("ok"):
-                    send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенте.", message_thread_id=thread_id)
+                    send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенту.", message_thread_id=thread_id)
                 else:
+                    print(f"❌ Ошибка отправки инвойса: {res}")
                     send_message(GROUP_ID, "❌ Ошибка отправки инвойса.", message_thread_id=thread_id)
                 return
 
@@ -458,7 +460,7 @@ def main():
                     handle_update(update)
                 except Exception as e:
                     print(f"Update Error: {e}")
-                time.sleep(0.5)
+                time.sleep(0.05)
 
 if __name__ == "__main__":
     main()
