@@ -9,13 +9,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1003809545859
 PORT = int(os.getenv("PORT", 10000))
+# На Render диски стираются, если не подключить Persistent Disk. 
+# Оставляем возможность задать путь к БД через переменные окружения.
+DB_PATH = os.getenv("DB_PATH", "database.db") 
 
 if not BOT_TOKEN:
     print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
     exit(1)
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-DB_NAME = "database.db"
 
 # --- In-Memory Хранилища ---
 user_states = {}       # {user_id: {"state": "...", "context": "..."}}
@@ -40,9 +42,8 @@ def run_web_server():
 
 # --- Инициализация БД ---
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Таблица тикетов
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tickets (
             user_id INTEGER PRIMARY KEY,
@@ -52,7 +53,6 @@ def init_db():
             service_name TEXT
         )
     """)
-    # Таблица для системных настроек (например, ID темы логов)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -62,9 +62,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- Функции работы с настройками БД ---
 def get_setting(key):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = cursor.fetchone()
@@ -72,7 +71,7 @@ def get_setting(key):
     return row[0] if row else None
 
 def set_setting(key, value):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
@@ -80,32 +79,25 @@ def set_setting(key, value):
 
 # --- Автосоздание темы для логов оплат ---
 def get_or_create_payments_thread():
-    # Проверяем, сохранен ли ID в базе
     thread_id = get_setting("payments_thread_id")
     if thread_id:
         return int(thread_id)
     
-    # Если нет, создаем новую тему через API Telegram
     topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": "💎 История оплат"})
     if topic_res and topic_res.get("ok"):
         new_thread_id = topic_res["result"]["message_thread_id"]
         set_setting("payments_thread_id", new_thread_id)
-        
-        # Отправляем приветственное сообщение в новую тему
         send_message(
             GROUP_ID, 
-            "📌 <b>Тема успешно создана!</b>\nСюда будут автоматически отправляться все чеки и история успешных оплат клиентов.", 
+            "📌 <b>Тема успешно создана!</b>\nСюда будут автоматически отправляться все чеки и история успешных оплат.", 
             message_thread_id=new_thread_id
         )
         return new_thread_id
-    
-    print("❌ Не удалось автоматически создать тему для оплат!")
     return None
 
 # --- Антиспам ---
 def check_spam(user_id):
     now = time.time()
-    
     if user_id in mutes:
         if now < mutes[user_id]:
             return "muted"
@@ -130,24 +122,23 @@ def check_spam(user_id):
 def api_request(method, data=None):
     url = f"{API_URL}/{method}"
     try:
-        response = requests.post(url, json=data, timeout=30)
+        # Увеличен timeout до 40, чтобы избежать спама ошибками "Read timed out" от Render
+        response = requests.post(url, json=data, timeout=40)
         return response.json()
     except Exception as e:
-        print(f"Ошибка запроса {method}: {e}")
+        if "Read timed out" not in str(e): # Скрываем нормальные таймауты Telegram
+            print(f"Ошибка запроса {method}: {e}")
         return None
 
 def send_message(chat_id, text, reply_markup=None, message_thread_id=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        data["reply_markup"] = reply_markup
-    if message_thread_id:
-        data["message_thread_id"] = message_thread_id
+    if reply_markup: data["reply_markup"] = reply_markup
+    if message_thread_id: data["message_thread_id"] = message_thread_id
     return api_request("sendMessage", data)
 
 def edit_message(chat_id, message_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        data["reply_markup"] = reply_markup
+    if reply_markup: data["reply_markup"] = reply_markup
     return api_request("editMessageText", data)
 
 def answer_callback(callback_query_id, text="", show_alert=False):
@@ -173,7 +164,6 @@ def skip_name_kb():
 def admin_close_kb():
     return {"inline_keyboard": [[{"text": "🔒 Закрыть тикет", "callback_data": "admin_close"}]]}
 
-# --- Словари услуг ---
 SERVICES = {
     "srv_consult": "Консультация / Вопрос",
     "srv_site_new": "Разработка сайтов с нуля",
@@ -181,7 +171,7 @@ SERVICES = {
     "srv_bot_new": "Разработка и исправление ботов"
 }
 
-# --- Логика ---
+# --- Создание тикета ---
 def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
     service_name = SERVICES.get(service_key, "Неизвестная услуга")
     
@@ -193,7 +183,7 @@ def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
     thread_id = topic_res["result"]["message_thread_id"]
     username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("INSERT INTO tickets (user_id, thread_id, custom_name, user_username, service_name) VALUES (?, ?, ?, ?, ?)",
                    (user_id, thread_id, custom_name, user_obj.get('username', ''), service_name))
@@ -208,11 +198,12 @@ def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
         f"🔗 Username: {username_str}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
         f"📌 Услуга: <b>{service_name}</b>\n\n"
-        f"<i>Для выставления счета используйте команду:</i>\n<code>/invoice 100</code>"
+        f"<i>Команда для выставления счета:</i>\n<code>/invoice 100</code>"
     )
     send_message(GROUP_ID, admin_text, reply_markup=admin_close_kb(), message_thread_id=thread_id)
-    send_message(chat_id, f"✅ <b>Тикет создан!</b>\nВаш запрос: <i>{service_name}</i>\n\nНапишите ваше сообщение, и специалист ответит вам в ближайшее время.")
+    send_message(chat_id, f"✅ <b>Тикет создан!</b>\nВаш запрос: <i>{service_name}</i>\n\nНапишите ваше сообщение (текст, фото, файлы), и специалист ответит вам в ближайшее время.")
 
+# --- Обработчик событий ---
 def handle_update(update):
     if "pre_checkout_query" in update:
         query_id = update["pre_checkout_query"]["id"]
@@ -271,7 +262,7 @@ def handle_update(update):
             edit_message(chat_id, message_id, "🤖 <b>Направление: Боты</b>", kb)
 
         elif data.startswith("srv_"):
-            conn = sqlite3.connect(DB_NAME)
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
@@ -295,7 +286,7 @@ def handle_update(update):
             thread_id = msg.get("message_thread_id")
             if not thread_id: return
             
-            conn = sqlite3.connect(DB_NAME)
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("SELECT user_id, custom_name FROM tickets WHERE thread_id = ?", (thread_id,))
             row = cursor.fetchone()
@@ -317,13 +308,14 @@ def handle_update(update):
         chat_id = chat["id"]
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
+        message_id = msg["message_id"]
 
-        # --- ОБРАБОТКА ОПЛАТЫ (ВЫНЕСЕНО В НАЧАЛО, ДО АНТИСПАМА) ---
+        # --- ОБРАБОТКА ОПЛАТЫ ---
         if "successful_payment" in msg:
             payment = msg["successful_payment"]
             stars = payment.get("total_amount", 0)
             
-            conn = sqlite3.connect(DB_NAME)
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("SELECT thread_id, custom_name, user_username, service_name FROM tickets WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
@@ -331,17 +323,14 @@ def handle_update(update):
             
             send_message(chat_id, f"🎉 <b>Оплата получена!</b>\nСпасибо за оплату в размере {stars} ⭐️. Специалист уже уведомлен.")
             
-            # Данные клиента для отчетов
             user_obj = msg["from"]
             username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
             client_name = row[1] if row and row[1] else user_obj.get("first_name", "Клиент")
             service_name = row[3] if row and row[3] else "Не указана"
 
-            # 1. Отправляем в текущую тему клиента (если тикет еще жив)
             if row and row[0]:
                 send_message(GROUP_ID, f"💰 <b>ОПЛАТА ПОЛУЧЕНА!</b>\nКлиент только что оплатил инвойс на <b>{stars} ⭐️</b>.", message_thread_id=row[0])
             
-            # 2. Отправка в тему-архив с защитой от удаления темы
             log_text = (
                 f"💎 <b>Новая успешная оплата!</b>\n\n"
                 f"👤 Клиент: <b>{client_name}</b>\n"
@@ -354,19 +343,19 @@ def handle_update(update):
             payments_thread_id = get_or_create_payments_thread()
             if payments_thread_id:
                 res = send_message(GROUP_ID, log_text, message_thread_id=payments_thread_id)
-                # Если тема была удалена вручную, Telegram вернет ошибку. Пересоздаем тему и отправляем повторно!
                 if not res or not res.get("ok"):
-                    set_setting("payments_thread_id", "") # Сбрасываем старый неверный ID
-                    new_thread_id = get_or_create_payments_thread() # Создаем новую
+                    set_setting("payments_thread_id", "") 
+                    new_thread_id = get_or_create_payments_thread() 
                     if new_thread_id:
                         send_message(GROUP_ID, log_text, message_thread_id=new_thread_id)
             return
 
+        # --- СООБЩЕНИЯ В ГРУППЕ (ОТ АДМИНОВ) ---
         if chat_id == GROUP_ID:
             thread_id = msg.get("message_thread_id")
             if not thread_id: return
 
-            conn = sqlite3.connect(DB_NAME)
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,))
             row = cursor.fetchone()
@@ -374,6 +363,7 @@ def handle_update(update):
             if not row: return
             client_id = row[0]
 
+            # Выставление счета
             if text.startswith("/invoice"):
                 parts = text.split()
                 if len(parts) < 2 or not parts[1].isdigit():
@@ -386,22 +376,33 @@ def handle_update(update):
                     "description": f"Счет на оплату услуг (Сумма: {stars} Telegram Stars)",
                     "payload": f"websoq_pay_{client_id}_{int(time.time())}",
                     "currency": "XTR",
-                    "provider_token": "",  # Обязательно для Telegram Stars
+                    "provider_token": "",
                     "prices": [{"label": "Услуги WebSoq", "amount": stars}]
                 }
                 res = api_request("sendInvoice", inv_data)
                 if res and res.get("ok"):
                     send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенту.", message_thread_id=thread_id)
                 else:
-                    print(f"❌ Ошибка отправки инвойса: {res}")
                     send_message(GROUP_ID, "❌ Ошибка отправки инвойса.", message_thread_id=thread_id)
                 return
 
-            if text:
-                api_request("sendMessage", {"chat_id": client_id, "text": f"👨‍💻 <b>Поддержка:</b>\n{text}", "parse_mode": "HTML"})
+            # Игнорирование сервисных сообщений Telegram (например, закрепление)
+            if "is_automatic_forward" in msg or "forum_topic_created" in msg:
+                return
 
+            # ВНУТРЕННИЕ ЗАМЕТКИ АДМИНОВ (начинаются с ! или .)
+            if text and (text.startswith("!") or text.startswith(".")):
+                return 
+
+            # ИДЕАЛЬНАЯ ПЕРЕСЫЛКА: копируем любое сообщение клиента (текст, фото, голосовые, файлы)
+            api_request("copyMessage", {
+                "chat_id": client_id,
+                "from_chat_id": GROUP_ID,
+                "message_id": message_id
+            })
+
+        # --- СООБЩЕНИЯ В ЛИЧКЕ (ОТ КЛИЕНТОВ) ---
         elif chat["type"] == "private":
-            # --- ГЛОБАЛЬНЫЙ АНТИСПАМ ---
             spam_status = check_spam(user_id)
             if spam_status == "muted":
                 return
@@ -427,20 +428,29 @@ def handle_update(update):
             current_state = state_data.get("state")
 
             if current_state == "waiting_name":
+                if not text:
+                    send_message(chat_id, "⚠️ Пожалуйста, отправьте ваше имя текстом или нажмите кнопку «Пропустить».")
+                    return
                 srv = state_data.get("context")
                 name = text.strip()[:30]
                 create_ticket(user_id, chat_id, msg["from"], name, srv)
                 return
 
             if current_state == "chatting":
-                conn = sqlite3.connect(DB_NAME)
+                conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
                 cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
                 row = cursor.fetchone()
                 conn.close()
 
                 if row:
-                    api_request("sendMessage", {"chat_id": GROUP_ID, "message_thread_id": row[0], "text": f"👤 <b>Клиент:</b>\n{text}", "parse_mode": "HTML"})
+                    # ИДЕАЛЬНАЯ ПЕРЕСЫЛКА: клиент может слать фото багов, ТЗ файлами и голосовые
+                    api_request("copyMessage", {
+                        "chat_id": GROUP_ID,
+                        "from_chat_id": chat_id,
+                        "message_id": message_id,
+                        "message_thread_id": row[0]
+                    })
                 else:
                     user_states.pop(user_id, None)
                     send_message(chat_id, "Ваш тикет закрыт. Нажмите /start для возврата в меню.", main_menu())
@@ -448,7 +458,7 @@ def handle_update(update):
 def main():
     init_db()
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("WebSoq CRM: Автосоздание темы оплат с защитой от удаления активировано!")
+    print(f"WebSoq CRM: Бот запущен! Медиа-движок активен. БД: {DB_PATH}")
     
     offset = 0
     while True:
