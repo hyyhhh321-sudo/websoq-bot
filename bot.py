@@ -8,8 +8,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 # --- Настройки ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1003809545859
-# ID темы для общего лога всех оплат (замените 0 на реальный ID темы, если она создана)
-PAYMENTS_THREAD_ID = int(os.getenv("PAYMENTS_THREAD_ID", 0)) 
 PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
@@ -44,6 +42,7 @@ def run_web_server():
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Таблица тикетов
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tickets (
             user_id INTEGER PRIMARY KEY,
@@ -53,8 +52,55 @@ def init_db():
             service_name TEXT
         )
     """)
+    # Таблица для системных настроек (например, ID темы логов)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
     conn.commit()
     conn.close()
+
+# --- Функции работы с настройками БД ---
+def get_setting(key):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+# --- Автосоздание темы для логов оплат ---
+def get_or_create_payments_thread():
+    # Проверяем, сохранен ли ID в базе
+    thread_id = get_setting("payments_thread_id")
+    if thread_id:
+        return int(thread_id)
+    
+    # Если нет, создаем новую тему через API Telegram
+    topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": "💎 История оплат"})
+    if topic_res and topic_res.get("ok"):
+        new_thread_id = topic_res["result"]["message_thread_id"]
+        set_setting("payments_thread_id", new_thread_id)
+        
+        # Отправляем приветственное сообщение в новую тему
+        send_message(
+            GROUP_ID, 
+            "📌 <b>Тема успешно создана!</b>\nСюда будут автоматически отправляться все чеки и история успешных оплат клиентов.", 
+            message_thread_id=new_thread_id
+        )
+        return new_thread_id
+    
+    print("❌ Не удалось автоматически создать тему для оплат!")
+    return None
 
 # --- Антиспам ---
 def check_spam(user_id):
@@ -294,17 +340,25 @@ def handle_update(update):
             if row and row[0]:
                 send_message(GROUP_ID, f"💰 <b>ОПЛАТА ПОЛУЧЕНА!</b>\nКлиент только что оплатил инвойс на <b>{stars} ⭐️</b>.", message_thread_id=row[0])
             
-            # 2. Отправляем в общую тему-архив всех оплат
-            if PAYMENTS_THREAD_ID > 0:
-                log_text = (
-                    f"💎 <b>Новая успешная оплата!</b>\n\n"
-                    f"👤 Клиент: <b>{client_name}</b>\n"
-                    f"🔗 Username: {username_str}\n"
-                    f"🆔 ID: <code>{user_id}</code>\n"
-                    f"📌 Услуга: <b>{service_name}</b>\n"
-                    f"⭐ Сумма: <b>{stars} Telegram Stars</b>"
-                )
-                send_message(GROUP_ID, log_text, message_thread_id=PAYMENTS_THREAD_ID)
+            # 2. Отправка в тему-архив с защитой от удаления темы
+            log_text = (
+                f"💎 <b>Новая успешная оплата!</b>\n\n"
+                f"👤 Клиент: <b>{client_name}</b>\n"
+                f"🔗 Username: {username_str}\n"
+                f"🆔 ID: <code>{user_id}</code>\n"
+                f"📌 Услуга: <b>{service_name}</b>\n"
+                f"⭐ Сумма: <b>{stars} Telegram Stars</b>"
+            )
+            
+            payments_thread_id = get_or_create_payments_thread()
+            if payments_thread_id:
+                res = send_message(GROUP_ID, log_text, message_thread_id=payments_thread_id)
+                # Если тема была удалена вручную, Telegram вернет ошибку. Пересоздаем тему и отправляем повторно!
+                if not res or not res.get("ok"):
+                    set_setting("payments_thread_id", "") # Сбрасываем старый неверный ID
+                    new_thread_id = get_or_create_payments_thread() # Создаем новую
+                    if new_thread_id:
+                        send_message(GROUP_ID, log_text, message_thread_id=new_thread_id)
             return
 
         if chat_id == GROUP_ID:
@@ -335,7 +389,7 @@ def handle_update(update):
                 }
                 res = api_request("sendInvoice", inv_data)
                 if res and res.get("ok"):
-                    send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенту.", message_thread_id=thread_id)
+                    send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенте.", message_thread_id=thread_id)
                 else:
                     send_message(GROUP_ID, "❌ Ошибка отправки инвойса.", message_thread_id=thread_id)
                 return
@@ -391,7 +445,7 @@ def handle_update(update):
 def main():
     init_db()
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("WebSoq CRM: Оплаты обрабатываются вне мута, добавлен лог-архив!")
+    print("WebSoq CRM: Автосоздание темы оплат с защитой от удаления активировано!")
     
     offset = 0
     while True:
