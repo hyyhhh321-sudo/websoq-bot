@@ -212,6 +212,227 @@ def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
     
     admin_text = (
         f"🚨 <b>Новый тикет открыт!</b>\n\n"
+        f"👤 Клиент: <b>{safe_name}</b>\Привет! Я обновил раздел с прайс-листом в твоем коде. 
+
+Новые цены на веб-разработку и правки сайтов были взяты из первого скриншота. Цены на разработку и исправление Telegram-ботов обновлены в соответствии со вторым скриншотом. Также в самом конце прайса я добавил строчку о том, что оплата принимается только в TON и Telegram Stars ⭐️. Остальной функционал бота остался без изменений.
+
+Вот готовый обновленный код:
+
+```python
+import os
+import html
+import sqlite3
+import time
+import threading
+import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# --- Настройки ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_ID = -1003809545859
+PORT = int(os.getenv("PORT", 10000))
+# На Render диски стираются, если не подключить Persistent Disk. 
+# Оставляем возможность задать путь к БД через переменные окружения.
+DB_PATH = os.getenv("DB_PATH", "database.db") 
+
+if not BOT_TOKEN:
+    print("Ошибка: Переменная окружения BOT_TOKEN не задана!")
+    exit(1)
+
+API_URL = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){BOT_TOKEN}"
+
+# --- In-Memory Хранилища ---
+user_states = {}       # {user_id: {"state": "...", "context": "..."}}
+spam_tracker = {}      # {user_id: [timestamp1, timestamp2, ...]}
+mutes = {}             # {user_id: unban_timestamp}
+
+# --- Веб-сервер для порта Render ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"WebSoq CRM is running!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        # Отключаем спам health-check пингами в логах
+        pass
+
+def run_web_server():
+    server_address = ("0.0.0.0", PORT)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    httpd.serve_forever()
+
+# --- Инициализация БД ---
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tickets (
+            user_id INTEGER PRIMARY KEY,
+            thread_id INTEGER,
+            custom_name TEXT,
+            user_username TEXT,
+            service_name TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_setting(key):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+# --- Автосоздание темы для логов оплат ---
+def get_or_create_payments_thread():
+    thread_id = get_setting("payments_thread_id")
+    if thread_id:
+        return int(thread_id)
+    
+    topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": "💎 История оплат"})
+    if topic_res and topic_res.get("ok"):
+        new_thread_id = topic_res["result"]["message_thread_id"]
+        set_setting("payments_thread_id", new_thread_id)
+        send_message(
+            GROUP_ID, 
+            "📌 <b>Тема успешно создана!</b>\nСюда будут автоматически отправляться все чеки и история успешных оплат.", 
+            message_thread_id=new_thread_id
+        )
+        return new_thread_id
+    return None
+
+# --- Антиспам ---
+def check_spam(user_id):
+    now = time.time()
+    if user_id in mutes:
+        if now < mutes[user_id]:
+            return "muted"
+        else:
+            del mutes[user_id]
+            
+    if user_id not in spam_tracker:
+        spam_tracker[user_id] = []
+        
+    spam_tracker[user_id] = [t for t in spam_tracker[user_id] if now - t < 3.0]
+    spam_tracker[user_id].append(now)
+    
+    msg_count = len(spam_tracker[user_id])
+    if msg_count >= 5:
+        mutes[user_id] = now + 60
+        return "mute_now"
+    elif msg_count >= 3:
+        return "warn"
+    return "ok"
+
+# --- API Запросы ---
+def api_request(method, data=None):
+    url = f"{API_URL}/{method}"
+    try:
+        # Увеличен timeout до 40, чтобы избежать спама ошибками "Read timed out" от Render
+        response = requests.post(url, json=data, timeout=40)
+        return response.json()
+    except Exception as e:
+        if "Read timed out" not in str(e): # Скрываем нормальные таймауты Telegram
+            print(f"Ошибка запроса {method}: {e}")
+        return None
+
+def send_message(chat_id, text, reply_markup=None, message_thread_id=None):
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup: data["reply_markup"] = reply_markup
+    if message_thread_id: data["message_thread_id"] = message_thread_id
+    return api_request("sendMessage", data)
+
+def edit_message(chat_id, message_id, text, reply_markup=None):
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup: data["reply_markup"] = reply_markup
+    return api_request("editMessageText", data)
+
+def answer_callback(callback_query_id, text="", show_alert=False):
+    api_request("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text, "show_alert": show_alert})
+
+def forward_with_prefix(prefix, from_chat_id, to_chat_id, message_id, message_thread_id=None):
+    """Отправляет подпись-заголовок, а затем копирует исходное сообщение (текст/фото/файл/голосовое)."""
+    send_message(to_chat_id, prefix, message_thread_id=message_thread_id)
+    copy_data = {
+        "chat_id": to_chat_id,
+        "from_chat_id": from_chat_id,
+        "message_id": message_id
+    }
+    if message_thread_id:
+        copy_data["message_thread_id"] = message_thread_id
+    api_request("copyMessage", copy_data)
+
+# --- Клавиатуры ---
+def main_menu():
+    return {
+        "inline_keyboard": [
+            [{"text": "🌐 Разработка сайтов", "callback_data": "cat_sites"}],
+            [{"text": "🤖 Telegram-боты", "callback_data": "cat_bots"}],
+            [{"text": "💎 Прайс-лист", "callback_data": "price_list"}],
+            [{"text": "💬 Консультация / Вопрос", "callback_data": "srv_consult"}],
+        ]
+    }
+
+def back_to_menu():
+    return {"inline_keyboard": [[{"text": "◀️ Назад в меню", "callback_data": "main_menu"}]]}
+
+def skip_name_kb():
+    return {"inline_keyboard": [[{"text": "⏭ Пропустить", "callback_data": "skip_name"}], [{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
+
+def admin_close_kb():
+    return {"inline_keyboard": [[{"text": "🔒 Закрыть тикет", "callback_data": "admin_close"}]]}
+
+SERVICES = {
+    "srv_consult": "Консультация / Вопрос",
+    "srv_site_new": "Разработка сайтов с нуля",
+    "srv_site_fix": "Правки и исправления на сайтах",
+    "srv_bot_new": "Разработка и исправление ботов"
+}
+
+# --- Создание тикета ---
+def create_ticket(user_id, chat_id, user_obj, custom_name, service_key):
+    service_name = SERVICES.get(service_key, "Неизвестная услуга")
+    safe_name = html.escape(custom_name)
+    
+    topic_res = api_request("createForumTopic", {"chat_id": GROUP_ID, "name": f"{custom_name} | {service_name[:15]}"})
+    if not topic_res or not topic_res.get("ok"):
+        send_message(chat_id, "❌ Ошибка создания тикета. Попробуйте позже.")
+        return
+        
+    thread_id = topic_res["result"]["message_thread_id"]
+    username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO tickets (user_id, thread_id, custom_name, user_username, service_name) VALUES (?, ?, ?, ?, ?)",
+                   (user_id, thread_id, custom_name, user_obj.get('username', ''), service_name))
+    conn.commit()
+    conn.close()
+
+    user_states[user_id] = {"state": "chatting"}
+    
+    admin_text = (
+        f"🚨 <b>Новый тикет открыт!</b>\n\n"
         f"👤 Клиент: <b>{safe_name}</b>\n"
         f"🔗 Username: {username_str}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
@@ -246,21 +467,22 @@ def handle_update(update):
             text = (
                 "💎 <b>Прайс-лист WebSoq</b>\n\n"
                 "🌐 <b>Создание сайтов с нуля:</b>\n"
-                "• Сайт с нуля (База) — 7 000 – 10 000 ⭐️ (~10 500 – 15 000 ₽)\n"
-                "• Создание сайтов на Tilda — 5 000 – 8 000 ⭐️ (~7 500 – 12 000 ₽)\n\n"
+                "• Сайт с нуля (верстка по макету) — 5 000 – 7 500 ⭐️ (~6 000 – 9 000 ₽ / TON)\n"
+                "• Создание сайтов на Tilda — 3 500 – 6 000 ⭐️ (~4 200 – 7 200 ₽ / TON)\n\n"
                 "🎨 <b>Доработка существующих сайтов (Тюнинг):</b>\n"
-                "• CSS (оформление, стили, дизайн) — 2 000 – 3 000 ⭐️ (~3 000 – 4 500 ₽)\n"
-                "• JavaScript (интерактив, анимации) — 2 000 – 3 500 ⭐️ (~3 000 – 5 000 ₽)\n"
-                "• Адаптация под мобильные устройства — 2 000 – 3 000 ⭐️ (~3 000 – 4 500 ₽)\n\n"
+                "• CSS (оформление, стили, верстка) — 1 500 – 2 500 ⭐️ (~1 800 – 3 000 ₽ / TON)\n"
+                "• JavaScript (интерактив, анимации) — 1 800 – 3 000 ⭐️ (~2 200 – 3 600 ₽ / TON)\n"
+                "• Адаптация под мобильные устройства — 1 500 – 2 500 ⭐️ (~1 800 – 3 000 ₽ / TON)\n\n"
                 "🛠 <b>Правки и исправления на сайтах:</b>\n"
-                "• Исправление текста / Замена картинок — 800 – 1 500 ⭐️ (~1 200 – 2 200 ₽)\n"
-                "• Изменение стилей и элементов — 1 500 – 3 000 ⭐️ (~2 200 – 4 500 ₽)\n"
-                "• Поиск багов / уязвимостей — 2 000 – 4 000 ⭐️ (~3 000 – 6 000 ₽)\n\n"
+                "• Исправление текста / Замена картинок — 600 – 1 000 ⭐️ (~700 – 1 200 ₽ / TON)\n"
+                "• Изменение стилей и элементов — 1 000 – 2 000 ⭐️ (~1 200 – 2 400 ₽ / TON)\n"
+                "• Поиск багов / уязвимостей — 1 500 – 3 000 ⭐️ (~1 800 – 3 600 ₽ / TON)\n\n"
                 "🤖 <b>Разработка и исправление Telegram-ботов:</b>\n"
-                "• Лёгкий бот (автоответчик, FAQ, визитка) — 5 000 – 8 000 ⭐️ (~7 500 – 12 000 ₽)\n"
-                "• Средний бот (заявки, категории, тикеты) — 12 000 – 20 000 ⭐️ (~18 000 – 30 000 ₽)\n"
-                "• Исправление чужого / сломанного кода — от 3 000 ⭐️ (~4 500 ₽)\n"
-                "• Сложные проекты — от 25 000 ⭐️ (индивидуально)"
+                "• Лёгкий бот (автоответчик, FAQ, визитка) — 3 500 – 6 000 ⭐️ (~4 200 – 7 200 ₽ / TON)\n"
+                "• Средний бот (заявки, категории, тикеты) — 8 000 – 15 000 ⭐️ (~9 600 – 18 000 ₽ / TON)\n"
+                "• Исправление чужого / сломанного кода — от 2 000 ⭐️ (~2 400 ₽ / TON)\n"
+                "• Сложные проекты — от 18 000 ⭐️ (индивидуально)\n\n"
+                "💳 <b>Оплата принимается ТОЛЬКО в TON и Telegram Stars ⭐️</b>"
             )
             edit_message(chat_id, message_id, text, back_to_menu())
 
@@ -473,16 +695,3 @@ def main():
     offset = 0
     while True:
         updates = api_request("getUpdates", {"offset": offset, "timeout": 30})
-        if updates and updates.get("ok"):
-            for update in updates.get("result", []):
-                offset = update["update_id"] + 1
-                try:
-                    handle_update(update)
-                except Exception as e:
-                    print(f"Update Error: {e}")
-                time.sleep(0.05)
-        else:
-            time.sleep(1)  # пауза при сбое сети/API, чтобы не долбить getUpdates впустую
-
-if __name__ == "__main__":
-    main()
