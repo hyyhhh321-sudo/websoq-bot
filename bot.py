@@ -24,6 +24,8 @@ API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 user_states = {}       # {user_id: {"state": "...", "context": "..."}}
 spam_tracker = {}      # {user_id: [timestamp1, timestamp2, ...]}
 mutes = {}             # {user_id: unban_timestamp}
+admin_cache = {}       # {user_id: (is_admin_bool, timestamp)}
+ADMIN_CACHE_TTL = 300   # 5 минут
 
 # --- Веб-сервер для порта Render ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -122,6 +124,23 @@ def check_spam(user_id):
     elif msg_count >= 3:
         return "warn"
     return "ok"
+
+# --- Проверка прав администратора группы ---
+def is_group_admin(user_id):
+    """Проверяет, является ли пользователь администратором/создателем группы поддержки.
+    Результат кэшируется на 5 минут, чтобы не спамить Telegram API запросами."""
+    now = time.time()
+    cached = admin_cache.get(user_id)
+    if cached and now - cached[1] < ADMIN_CACHE_TTL:
+        return cached[0]
+
+    res = api_request("getChatMember", {"chat_id": GROUP_ID, "user_id": user_id})
+    is_admin = False
+    if res and res.get("ok"):
+        status = res["result"].get("status")
+        is_admin = status in ("administrator", "creator")
+    admin_cache[user_id] = (is_admin, now)
+    return is_admin
 
 # --- API Запросы ---
 def api_request(method, data=None):
@@ -245,22 +264,27 @@ def handle_update(update):
         elif data == "price_list":
             text = (
                 "💎 <b>Прайс-лист WebSoq</b>\n\n"
-                "🌐 <b>Создание сайтов с нуля:</b>\n"
-                "• Сайт с нуля (База) — 7 000 – 10 000 ⭐️ (~10 500 – 15 000 ₽)\n"
-                "• Создание сайтов на Tilda — 5 000 – 8 000 ⭐️ (~7 500 – 12 000 ₽)\n\n"
+                "🌐 <b>Создание сайтов с нуля (База):</b>\n"
+                "• Сайт с нуля — 6 000 – 9 000 ₽ / TON (~3 800 – 5 800 ⭐️)\n"
+                "• Создание сайтов на Tilda — 4 200 – 7 200 ₽ / TON (~2 700 – 4 600 ⭐️)\n\n"
                 "🎨 <b>Доработка существующих сайтов (Тюнинг):</b>\n"
-                "• CSS (оформление, стили, дизайн) — 2 000 – 3 000 ⭐️ (~3 000 – 4 500 ₽)\n"
-                "• JavaScript (интерактив, анимации) — 2 000 – 3 500 ⭐️ (~3 000 – 5 000 ₽)\n"
-                "• Адаптация под мобильные устройства — 2 000 – 3 000 ⭐️ (~3 000 – 4 500 ₽)\n\n"
+                "• CSS (оформление, стили, верстка) — 1 800 – 3 000 ₽ / TON (~1 200 – 1 900 ⭐️)\n"
+                "• JavaScript (интерактив, анимации) — 2 200 – 3 600 ₽ / TON (~1 400 – 2 300 ⭐️)\n"
+                "• Адаптация под мобильные устройства — 1 800 – 3 000 ₽ / TON (~1 200 – 1 900 ⭐️)\n\n"
                 "🛠 <b>Правки и исправления на сайтах:</b>\n"
-                "• Исправление текста / Замена картинок — 800 – 1 500 ⭐️ (~1 200 – 2 200 ₽)\n"
-                "• Изменение стилей и элементов — 1 500 – 3 000 ⭐️ (~2 200 – 4 500 ₽)\n"
-                "• Поиск багов / уязвимостей — 2 000 – 4 000 ⭐️ (~3 000 – 6 000 ₽)\n\n"
-                "🤖 <b>Разработка и исправление Telegram-ботов:</b>\n"
-                "• Лёгкий бот (автоответчик, FAQ, визитка) — 5 000 – 8 000 ⭐️ (~7 500 – 12 000 ₽)\n"
-                "• Средний бот (заявки, категории, тикеты) — 12 000 – 20 000 ⭐️ (~18 000 – 30 000 ₽)\n"
-                "• Исправление чужого / сломанного кода — от 3 000 ⭐️ (~4 500 ₽)\n"
-                "• Сложные проекты — от 25 000 ⭐️ (индивидуально)"
+                "• Исправление текста / Замена картинок — 700 – 1 200 ₽ / TON (~450 – 770 ⭐️)\n"
+                "• Изменение стилей и элементов — 1 200 – 2 400 ₽ / TON (~770 – 1 500 ⭐️)\n"
+                "• Поиск багов / уязвимостей — 1 800 – 3 600 ₽ / TON (~1 200 – 2 300 ⭐️)\n\n"
+                "🤖 <b>Разработка и исправление Telegram-ботов (Лёгкие и средние задачи):</b>\n"
+                "• Лёгкий бот (автоответчик, FAQ, визитка) — 3 500 – 6 000 ₽ / TON (~2 200 – 3 800 ⭐️)\n"
+                "• Средний бот (заявки, категории, тикеты) — 8 000 – 15 000 ₽ / TON (~5 100 – 9 600 ⭐️)\n"
+                "• Исправление чужого / сломанного кода — от 2 000 ₽ / TON (от ~1 300 ⭐️)\n"
+                "• Сложные проекты — от 18 000 ₽ / TON (индивидуально)\n\n"
+                "💎 <b>Условия и способы оплаты</b>\n"
+                "Мы принимаем оплату цифровыми активами: TON, USDT или Telegram Stars ⭐️.\n\n"
+                "• Оплата в TON / USDT: выгодный расчёт по базовой цене без скрытых комиссий. Перевод можно сделать напрямую или через Telegram Wallet.\n"
+                "• Оплата в Telegram Stars: удобный способ перевести звёзды прямо в Telegram (расчёт Stars в скобках является ориентировочным из-за комиссий системы).\n\n"
+                "💡 Если вы никогда не переводили TON или Stars, просто напишите нам — мы пришлём понятную инструкцию на 1 минуту, как оплатить с любой карты РФ!"
             )
             edit_message(chat_id, message_id, text, back_to_menu())
 
@@ -301,6 +325,10 @@ def handle_update(update):
                 create_ticket(user_id, chat_id, user, user.get("first_name", "Клиент"), srv)
 
         elif data == "admin_close":
+            if not is_group_admin(user_id):
+                answer_callback(cq["id"], "⛔ Только администраторы могут закрывать тикеты.", show_alert=True)
+                return
+
             thread_id = msg.get("message_thread_id")
             if not thread_id: return
             
@@ -382,6 +410,11 @@ def handle_update(update):
             if not row: return
             client_id = row[0]
 
+            # Проверка прав: работать с тикетами (счета, заметки, ответы клиенту)
+            # могут только реальные администраторы/создатель группы
+            if not is_group_admin(user_id):
+                return
+
             # Выставление счета
             if text.startswith("/invoice"):
                 parts = text.split()
@@ -389,6 +422,9 @@ def handle_update(update):
                     send_message(GROUP_ID, "⚠️ Формат: <code>/invoice 100</code>", message_thread_id=thread_id)
                     return
                 stars = int(parts[1])
+                if stars <= 0 or stars > 100000:
+                    send_message(GROUP_ID, "⚠️ Некорректная сумма. Укажите число от 1 до 100000.", message_thread_id=thread_id)
+                    return
                 inv_data = {
                     "chat_id": client_id,
                     "title": "Оплата услуг WebSoq",
