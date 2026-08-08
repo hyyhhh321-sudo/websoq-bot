@@ -257,24 +257,261 @@ def handle_update(update):
             edit_message(chat_id, message_id, "Главное меню <b>WebSoq</b>:", main_menu())
             
         elif data == "price_list":
-            text = (
-                "💎 <b>Прайс-лист WebSoq</b>\n\n"
-                "🌐 <b>Создание сайтов с нуля (База):</b>\n"
-                "• Сайт с нуля — 6 000 – 9 000 ₽ / TON (~3 800 – 5 800 ⭐️)\n"
-                "• Создание сайтов на Tilda — 4 200 – 7 200 ₽ / TON (~2 700 – 4 600 ⭐️)\n\n"
-                "🎨 <b>Доработка существующих сайтов (Тюнинг):</b>\n"
-                "• CSS (оформление, стили, верстка) — 1 800 – 3 000 ₽ / TON (~1 200 – 1 900 ⭐️)\n"
-                "• JavaScript (интерактив, анимации) — 2 200 – 3 600 ₽ / TON (~1 400 – 2 300 ⭐️)\n"
-                "• Адаптация под мобильные устройства — 1 800 – 3 000 ₽ / TON (~1 200 – 1 900 ⭐️)\n\n"
-                "🛠 <b>Правки и исправления на сайтах:</b>\n"
-                "• Исправление текста / Замена картинок — 700 – 1 200 ₽ / TON (~450 – 770 ⭐️)\n"
-                "• Изменение стилей и элементов — 1 200 – 2 400 ₽ / TON (~770 – 1 500 ⭐️)\n"
-                "• Поиск багов / уязвимостей — 1 800 – 3 600 ₽ / TON (~1 200 – 2 300 ⭐️)\n\n"
-                "🤖 <b>Разработка и исправление Telegram-ботов (Лёгкие и средние задачи):</b>\n"
-                "• Лёгкий бот (автоответчик, FAQ, визитка) — 3 500 – 6 000 ₽ / TON (~2 200 – 3 800 ⭐️)\n"
-                "• Средний бот (заявки, категории, тикеты) — 8 000 – 15 000 ₽ / TON (~5 100 – 9 600 ⭐️)\n"
-                "• Исправление чужого / сломанного кода — от 2 000 ₽ / TON (от ~1 300 ⭐️)\n"
-                "• Сложные проекты — от 18 000 ₽ / TON (индивидуально)\n\n"
-                "💎 <b>Условия и способы оплаты</b>\n"
-                "Я принимаю оплату цифровыми активами: TON, USDT или Telegram Stars ⭐️.\n\n"
-                "• Оплата в TON / USDT:
+            text = """💎 <b>Прайс-лист WebSoq</b>
+
+🌐 <b>Создание сайтов с нуля (База):</b>
+- Сайт с нуля — 6 000 – 9 000 ₽ / TON (~3 800 – 5 800 ⭐️)
+- Создание сайтов на Tilda — 4 200 – 7 200 ₽ / TON (~2 700 – 4 600 ⭐️)
+
+🎨 <b>Доработка существующих сайтов (Тюнинг):</b>
+- CSS (оформление, стили, верстка) — 1 800 – 3 000 ₽ / TON (~1 200 – 1 900 ⭐️)
+- JavaScript (интерактив, анимации) — 2 200 – 3 600 ₽ / TON (~1 400 – 2 300 ⭐️)
+- Адаптация под мобильные устройства — 1 800 – 3 000 ₽ / TON (~1 200 – 1 900 ⭐️)
+
+🛠 <b>Правки и исправления на сайтах:</b>
+- Исправление текста / Замена картинок — 700 – 1 200 ₽ / TON (~450 – 770 ⭐️)
+- Изменение стилей и элементов — 1 200 – 2 400 ₽ / TON (~770 – 1 500 ⭐️)
+- Поиск багов / уязвимостей — 1 800 – 3 600 ₽ / TON (~1 200 – 2 300 ⭐️)
+
+🤖 <b>Разработка и исправление Telegram-ботов (Лёгкие и средние задачи):</b>
+- Лёгкий бот (автоответчик, FAQ, визитка) — 3 500 – 6 000 ₽ / TON (~2 200 – 3 800 ⭐️)
+- Средний бот (заявки, категории, тикеты) — 8 000 – 15 000 ₽ / TON (~5 100 – 9 600 ⭐️)
+- Исправление чужого / сломанного кода — от 2 000 ₽ / TON (от ~1 300 ⭐️)
+- Сложные проекты — от 18 000 ₽ / TON (индивидуально)
+
+💎 <b>Условия и способы оплаты</b>
+Я принимаю оплату цифровыми активами: TON, USDT или Telegram Stars ⭐️.
+
+- Оплата в TON / USDT: выгодный расчёт по базовой цене без скрытых комиссий. Перевод можно сделать напрямую или через Telegram Wallet.
+- Оплата в Telegram Stars: удобный способ перевести звёзды прямо в Telegram (расчёт Stars в скобках является ориентировочным из-за комиссий системы).
+
+💡 Если вы никогда не переводили TON или Stars, просто напишите мне — пришлю понятную инструкцию на 1 минуту, как оплатить с любой карты РФ!"""
+            edit_message(chat_id, message_id, text, back_to_menu())
+
+        elif data == "cat_sites":
+            kb = {"inline_keyboard": [
+                [{"text": "🌐 Создать сайт с нуля", "callback_data": "srv_site_new"}],
+                [{"text": "🔧 Правки и исправления", "callback_data": "srv_site_fix"}],
+                [{"text": "◀️ Назад", "callback_data": "main_menu"}]
+            ]}
+            edit_message(chat_id, message_id, "💻 <b>Направление: Сайты</b>", kb)
+
+        elif data == "cat_bots":
+            kb = {"inline_keyboard": [
+                [{"text": "🤖 Разработка и исправление", "callback_data": "srv_bot_new"}],
+                [{"text": "◀️ Назад", "callback_data": "main_menu"}]
+            ]}
+            edit_message(chat_id, message_id, "🤖 <b>Направление: Боты</b>", kb)
+
+        elif data.startswith("srv_"):
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if row:
+                answer_callback(cq["id"], "У вас уже есть открытый тикет!", show_alert=True)
+                return
+
+            user_states[user_id] = {"state": "waiting_name", "context": data}
+            edit_message(chat_id, message_id, "✍️ Как я могу к вам обращаться?\n\n<i>Напишите имя в чат или нажмите «Пропустить»</i>", skip_name_kb())
+
+        elif data == "skip_name":
+            state_data = user_states.get(user_id)
+            if state_data and state_data.get("state") == "waiting_name":
+                srv = state_data["context"]
+                edit_message(chat_id, message_id, "⏳ Создаем тикет...")
+                create_ticket(user_id, chat_id, user, user.get("first_name", "Клиент"), srv)
+
+        elif data == "admin_close":
+            if not is_group_admin(user_id):
+                answer_callback(cq["id"], "⛔ Только администраторы могут закрывать тикеты.", show_alert=True)
+                return
+
+            thread_id = msg.get("message_thread_id")
+            if not thread_id: return
+            
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, custom_name FROM tickets WHERE thread_id = ?", (thread_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                client_id, c_name = row
+                send_message(client_id, "✅ Ваш тикет был успешно закрыт. Спасибо, что выбрали меня!", main_menu())
+                user_states.pop(client_id, None)
+                cursor.execute("DELETE FROM tickets WHERE thread_id = ?", (thread_id,))
+                conn.commit()
+                edit_message(chat_id, message_id, f"🔒 Тикет клиента <b>{html.escape(c_name or '')}</b> закрыт администратором.")
+            conn.close()
+
+        answer_callback(cq["id"])
+
+    elif "message" in update:
+        msg = update["message"]
+        chat = msg["chat"]
+        chat_id = chat["id"]
+        user_id = msg["from"]["id"]
+        text = msg.get("text", "")
+        message_id = msg["message_id"]
+
+        # --- ОБРАБОТКА ОПЛАТЫ ---
+        if "successful_payment" in msg:
+            payment = msg["successful_payment"]
+            stars = payment.get("total_amount", 0)
+            
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT thread_id, custom_name, user_username, service_name FROM tickets WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            send_message(chat_id, f"🎉 <b>Оплата получена!</b>\nСпасибо за оплату в размере {stars} ⭐️. Я уже в курсе.")
+            
+            user_obj = msg["from"]
+            username_str = f"@{user_obj.get('username')}" if user_obj.get('username') else "Скрыт"
+            client_name = row[1] if row and row[1] else user_obj.get("first_name", "Клиент")
+            safe_client_name = html.escape(client_name or "Клиент")
+            service_name = row[3] if row and row[3] else "Не указана"
+
+            if row and row[0]:
+                send_message(GROUP_ID, f"💰 <b>ОПЛАТА ПОЛУЧЕНА!</b>\nКлиент только что оплатил инвойс на <b>{stars} ⭐️</b>.", message_thread_id=row[0])
+            
+            log_text = (
+                f"💎 <b>Новая успешная оплата!</b>\n\n"
+                f"👤 Клиент: <b>{safe_client_name}</b>\n"
+                f"🔗 Username: {username_str}\n"
+                f"🆔 ID: <code>{user_id}</code>\n"
+                f"📌 Услуга: <b>{service_name}</b>\n"
+                f"⭐ Сумма: <b>{stars} Telegram Stars</b>"
+            )
+            
+            payments_thread_id = get_or_create_payments_thread()
+            if payments_thread_id:
+                res = send_message(GROUP_ID, log_text, message_thread_id=payments_thread_id)
+                if not res or not res.get("ok"):
+                    set_setting("payments_thread_id", "") 
+                    new_thread_id = get_or_create_payments_thread() 
+                    if new_thread_id:
+                        send_message(GROUP_ID, log_text, message_thread_id=new_thread_id)
+            return
+
+        # --- СООБЩЕНИЯ В ГРУППЕ (ОТ АДМИНОВ) ---
+        if chat_id == GROUP_ID:
+            thread_id = msg.get("message_thread_id")
+            if not thread_id: return
+
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM tickets WHERE thread_id = ?", (thread_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if not row: return
+            client_id = row[0]
+
+            if not is_group_admin(user_id):
+                return
+
+            if text.startswith("/invoice"):
+                parts = text.split()
+                if len(parts) < 2 or not parts[1].isdigit():
+                    send_message(GROUP_ID, "⚠️ Формат: <code>/invoice 100</code>", message_thread_id=thread_id)
+                    return
+                stars = int(parts[1])
+                if stars <= 0 or stars > 100000:
+                    send_message(GROUP_ID, "⚠️ Некорректная сумма. Укажите число от 1 до 100000.", message_thread_id=thread_id)
+                    return
+                inv_data = {
+                    "chat_id": client_id,
+                    "title": "Оплата услуг WebSoq",
+                    "description": f"Счет на оплату услуг (Сумма: {stars} Telegram Stars)",
+                    "payload": f"websoq_pay_{client_id}_{int(time.time())}",
+                    "currency": "XTR",
+                    "provider_token": "",
+                    "prices": [{"label": "Услуги WebSoq", "amount": stars}]
+                }
+                res = api_request("sendInvoice", inv_data)
+                if res and res.get("ok"):
+                    send_message(GROUP_ID, f"🧾 <b>Инвойс отправлен!</b>\nСчет на {stars} ⭐️ успешно доставлен клиенту.", message_thread_id=thread_id)
+                else:
+                    send_message(GROUP_ID, "❌ Ошибка отправки инвойса.", message_thread_id=thread_id)
+                return
+
+            if "is_automatic_forward" in msg or "forum_topic_created" in msg:
+                return
+
+            if text and (text.startswith("!") or text.startswith(".")):
+                return 
+
+            forward_with_prefix("🧑‍💻 Поддержка:", GROUP_ID, client_id, message_id)
+
+        # --- СООБЩЕНИЯ В ЛИЧКЕ (ОТ КЛИЕНТОВ) ---
+        elif chat["type"] == "private":
+            spam_status = check_spam(user_id)
+            if spam_status == "muted":
+                return
+            elif spam_status == "mute_now":
+                send_message(chat_id, "🛑 <b>Вы отправляете сообщения слишком быстро! Включен режим тишины на 1 минуту.</b>")
+                return
+            elif spam_status == "warn":
+                send_message(chat_id, "⚠️ <b>Пожалуйста, не отправляйте сообщения так часто.</b>")
+                return
+
+            if text == "/start":
+                user_states.pop(user_id, None)
+                welcome_text = (
+                    "👋 <b>Добро пожаловать в студию WebSoq!</b>\n\n"
+                    "Я — разработчик, готовый воплотить ваши идеи в реальность. "
+                    "Специализируюсь на разработке современных сайтов и умных Telegram-ботов любой сложности. 🚀\n\n"
+                    "👇 <i>Выберите интересующий вас раздел в меню ниже:</i>"
+                )
+                send_message(chat_id, welcome_text, main_menu())
+                return
+
+            state_data = user_states.get(user_id, {})
+            current_state = state_data.get("state")
+
+            if current_state == "waiting_name":
+                if not text:
+                    send_message(chat_id, "⚠️ Пожалуйста, отправьте ваше имя текстом или нажмите кнопку «Пропустить».")
+                    return
+                srv = state_data.get("context")
+                name = text.strip()[:30]
+                create_ticket(user_id, chat_id, msg["from"], name, srv)
+                return
+
+            if current_state == "chatting":
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute("SELECT thread_id FROM tickets WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                conn.close()
+
+                if row:
+                    forward_with_prefix("💻 Клиент:", chat_id, GROUP_ID, message_id, message_thread_id=row[0])
+                else:
+                    user_states.pop(user_id, None)
+                    send_message(chat_id, "Ваш тикет закрыт. Нажмите /start для возврата в меню.", main_menu())
+
+def main():
+    init_db()
+    threading.Thread(target=run_web_server, daemon=True).start()
+    print(f"WebSoq CRM: Бот запущен! Медиа-движок активен. БД: {DB_PATH}")
+    
+    offset = 0
+    while True:
+        updates = api_request("getUpdates", {"offset": offset, "timeout": 30})
+        if updates and updates.get("ok"):
+            for update in updates.get("result", []):
+                offset = update["update_id"] + 1
+                try:
+                    handle_update(update)
+                except Exception as e:
+                    print(f"Update Error: {e}")
+                time.sleep(0.05)
+        else:
+            time.sleep(1)
+
+if __name__ == "__main__":
+    main()
